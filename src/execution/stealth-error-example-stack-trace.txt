@@ -1,0 +1,63 @@
+This is a real example stack trace with no automation.
+Threw an error by overriding document.querySelector. 
+When a function from app.js used document.querySelector 
+it logs the following stack trace.
+Error: Bot Error
+    at myBotCheck (test2.html:6:27)
+    at HTMLDocument.querySelector (test2.html:14:25)
+    at plop1 (app.js:3:24)
+    at plop2 (app.js:7:5)
+    at plop3 (app.js:11:5)
+    at app.js:14:1
+
+This is an example stack trace when using playwright with "page.evaluate()":
+Error: Detection Error
+    at testSourceUrlError (https://bot-detector.rebrowser.net/index.js?2:373:19)
+    at HTMLDocument.getElementById (https://bot-detector.rebrowser.net/index.js?2:401:7)
+    at eval (eval at evaluate (:234:30), :1:16)
+    at UtilityScript.evaluate (:236:17)
+    at UtilityScript. (:1:44)
+
+This is an example stack trace when using playwright with "page.$$eval()":
+Error: Bot Error
+    at myBotCheck (test2.html:7:27)
+    at HTMLDocument.querySelectorAll (test2.html:15:25)
+    at query (<anonymous>:3449:36)
+    at <anonymous>:3454:7
+    at SelectorEvaluatorImpl._cached (<anonymous>:3231:20)
+    at SelectorEvaluatorImpl._queryCSS (<anonymous>:3441:17)
+    at SelectorEvaluatorImpl._querySimple (<anonymous>:3321:19)
+    at <anonymous>:3269:29
+    at SelectorEvaluatorImpl._cached (<anonymous>:3231:20)
+    at SelectorEvaluatorImpl.query (<anonymous>:3262:19)
+
+Stack trace from a website:
+Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'setModuleReady')
+    at Permutive.min.js:1:20300
+    at new Promise (<anonymous>)
+    at E.f.init (Permutive.min.js:1:20093)
+    at Permutive.min.js:1:2702
+
+Uncaught TypeError: Cannot read properties of null (reading 'addEventListener')
+    at <anonymous>:1:48
+    at gtm.js?id=GTM-5W6NC8:691:429
+    at sN (gtm.js?id=GTM-5W6NC8:693:31)
+    at ed.rN (gtm.js?id=GTM-5W6NC8:690:174)
+    at ed.<anonymous> (gtm.js?id=GTM-5W6NC8:314:187)
+    at h.invoke (gtm.js?id=GTM-5W6NC8:229:361)
+    at La (gtm.js?id=GTM-5W6NC8:195:927)
+    at Ka (gtm.js?id=GTM-5W6NC8:195:683)
+    at ed.<anonymous> (gtm.js?id=GTM-5W6NC8:253:466)
+    at h.invoke (gtm.js?id=GTM-5W6NC8:229:361)
+
+How we will modify the stack trace:
+A.) Before script is first evaluated by v8 engine, we will replace the script name with our custom identifier.
+    The identifier will serve 2 purposes:
+        - it tells us that this is a CDP script and should have it's stack trace modified 
+        - it tells us which lines correspond to our CDP script and should be modified
+
+B.) Remove all lines that contain our identifier.
+
+C.) We'll add between 1 and 5 new lines (random number of lines). Random function names of random length.
+    Random line numbers. Always app.js as file name for now. Doesn't seem like that's enough 
+    of an identifier to use as a signal.

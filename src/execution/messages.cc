@@ -14,6 +14,7 @@
 #include "src/execution/frames.h"
 #include "src/execution/isolate-inl.h"
 #include "src/execution/isolate.h"
+#include "src/execution/stealth-error-stack.h"
 #include "src/handles/maybe-handles.h"
 #include "src/logging/runtime-call-stats-scope.h"
 #include "src/objects/call-site-info-inl.h"
@@ -25,6 +26,7 @@
 #include "src/parsing/parsing.h"
 #include "src/roots/roots.h"
 #include "src/strings/string-builder-inl.h"
+#include <fstream>
 
 namespace v8 {
 namespace internal {
@@ -283,6 +285,35 @@ class V8_NODISCARD PrepareStackTraceScope {
 
 }  // namespace
 
+std::string ConvertMaybeDirectHandleStringToStdString(Isolate* isolate, 
+                                                     MaybeDirectHandle<String> maybe_string) {
+  if (maybe_string.is_null()) {
+    return "";
+  }
+  
+  DirectHandle<String> string_handle = maybe_string.ToHandleChecked();
+  
+  // Get the length of the string
+  int length = string_handle->length();
+  // Allocate buffer for the UTF-8 string (worst case: 3 bytes per char)
+  std::unique_ptr<char[]> buffer(new char[length * sizeof(char) * 3 + 1]);
+  
+  // Use the correct namespace/class for Utf8EncodingFlags
+  UncachedExternalString::Utf8EncodingFlags flags = 
+      static_cast<UncachedExternalString::Utf8EncodingFlags>(0);  // Use default flags
+  
+  // Store the result in size_t to avoid the precision warning
+  size_t utf8_length = String::WriteUtf8(
+      isolate, 
+      string_handle, 
+      buffer.get(), 
+      length * sizeof(char) * 3,
+      flags,
+      nullptr);  // No need to know how many characters were processed
+  
+  return std::string(buffer.get(), utf8_length);
+}
+
 // static
 MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
     Isolate* isolate, DirectHandle<JSObject> error,
@@ -316,6 +347,8 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
 
       // If there's a user-specified "prepareStackTrace" function, call it on
       // the frames and use its result.
+      // "prepareStackTrace" is not available in the browser so we don't need to 
+      // worry about it as far as scraping detection is concerned.
 
       DirectHandle<Object> prepare_stack_trace;
       ASSIGN_RETURN_ON_EXCEPTION(
@@ -390,7 +423,28 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
     }
   }
 
-  return builder.Finish();
+  // Get the default formatted stack string
+  MaybeDirectHandle<String> defaultStackTrace = builder.Finish();
+
+  // Convert V8 string to std::string for easier manipulation
+  std::string customStackTrace = ConvertMaybeDirectHandleStringToStdString(isolate, defaultStackTrace);
+  
+  // Perform all the replacements
+  bool customized = stealth_stack::ContainsStealthScriptName(customStackTrace);
+
+  if (customized) {
+    customStackTrace = stealth_stack::FormatStackTrace(customStackTrace);
+  }
+  
+  // Convert back to V8 string if modified
+  if (customized) {
+    return isolate->factory()->NewStringFromUtf8(
+        base::Vector<const char>(customStackTrace.c_str(), customStackTrace.length()))
+        .ToHandleChecked();
+  }
+  
+  // Return original if no replacements were made
+  return defaultStackTrace;
 }
 
 DirectHandle<String> MessageFormatter::Format(

@@ -55,8 +55,24 @@
 #include "src/inspector/v8-stack-trace-impl.h"
 #include "src/inspector/v8-value-utils.h"
 #include "src/tracing/trace-event.h"
+#include "src/execution/stealth-error-stack.h"
+#include <cstdio>
+
 
 namespace v8_inspector {
+
+  std::string ConvertV8StringToStdString(v8::Local<v8::String> v8Str, v8::Isolate* isolate) {
+    // Get the string's length
+    size_t length = v8Str->Utf8LengthV2(isolate);
+    
+    // Create a buffer for the string data
+    std::string result(length, '\0');
+    
+    // Copy the v8 string into the std::string buffer
+    v8Str->WriteUtf8V2(isolate, &result[0], length);
+    
+    return result;
+  }
 
 namespace V8RuntimeAgentImplState {
 static const char customObjectFormatterEnabled[] =
@@ -152,13 +168,20 @@ void innerCallFunctionOn(
 
   v8::MaybeLocal<v8::Value> maybeFunctionValue;
   v8::Local<v8::Script> functionScript;
+
+  // Remove it's sourceURL if it exists. Then add ours.
+  std::string exp = v8::internal::stealth_stack::SetSourceURL(expression.utf8(), true);
+
+  String16 expressionWithSourceURL = v8_inspector::String16::fromUTF8(exp.c_str(), exp.length());
+
   if (inspector
-          ->compileScript(scope.context(), "(" + expression + ")", String16())
-          .ToLocal(&functionScript)) {
+    ->compileScript(scope.context(), expressionWithSourceURL, String16())
+    .ToLocal(&functionScript)) {
     v8::MicrotasksScope microtasksScope(scope.context(),
-                                        v8::MicrotasksScope::kRunMicrotasks);
+                                      v8::MicrotasksScope::kRunMicrotasks);
     maybeFunctionValue = functionScript->Run(scope.context());
   }
+
   // Re-initialize after running client's code, as it could have destroyed
   // context or session.
   Response response = scope.initialize();
@@ -412,8 +435,15 @@ void V8RuntimeAgentImpl::evaluate(
     } else if (disableBreaks.value_or(false)) {
       mode = v8::debug::EvaluateGlobalMode::kDisableBreaks;
     }
+
+    // Remove it's sourceURL if it exists. Then add ours.
+    std::string exp = v8::internal::stealth_stack::SetSourceURL(expression.utf8(), false);
+
+    String16 expressionWithSourceURL = v8_inspector::String16::fromUTF8(exp.c_str(), exp.length());
+
     const v8::Local<v8::String> source =
-        toV8String(m_inspector->isolate(), expression);
+        toV8String(m_inspector->isolate(), expressionWithSourceURL);
+
     maybeResultValue = v8::debug::EvaluateGlobal(m_inspector->isolate(), source,
                                                  mode, replMode);
   }  // Run microtasks before returning result.
@@ -695,8 +725,16 @@ Response V8RuntimeAgentImpl::compileScript(
 
   if (!persistScript) m_inspector->debugger()->muteScriptParsedEvents();
   v8::Local<v8::Script> script;
-  bool isOk = m_inspector->compileScript(scope.context(), expression, sourceURL)
+  
+  std::string scriptNameS = v8::internal::stealth_stack::GetStealthScriptName();
+  String16 scriptName = v8_inspector::String16::fromUTF8(scriptNameS.c_str(), scriptNameS.length());
+
+  String16 modifiedExpression = expression;
+  modifiedExpression += "\n//# sourceURL=" + scriptName;
+
+  bool isOk = m_inspector->compileScript(scope.context(), modifiedExpression, scriptName)
                   .ToLocal(&script);
+
   if (!persistScript) m_inspector->debugger()->unmuteScriptParsedEvents();
   if (!isOk) {
     if (scope.tryCatch().HasCaught()) {
