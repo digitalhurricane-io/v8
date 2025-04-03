@@ -283,6 +283,81 @@ class V8_NODISCARD PrepareStackTraceScope {
 
 }  // namespace
 
+// Static variables for stack trace string replacement
+namespace {
+  // Using anonymous namespace to limit scope to this file only
+  static const char* kSalt = nullptr;
+  static std::unordered_map<std::string, std::string>* g_string_to_hash = nullptr;
+  static std::once_flag g_init_flag;
+}  // namespace
+
+static void InitializeStackTraceReplacements() {
+  // Generate a random salt
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<uint32_t> dis;
+  
+  std::stringstream ss;
+  ss << dis(gen) << std::time(nullptr) << dis(gen);
+  kSalt = strdup(ss.str().c_str());
+  
+  // Initialize the hash map
+  g_string_to_hash = new std::unordered_map<std::string, std::string>();
+  
+  // List of strings to search for and replace
+  const std::vector<const char*> strings_to_replace = {
+    "UtilityScript",
+    "pptr:", // todo: can we be more specific?
+  };
+  
+  // Pre-compute all hashes
+  for (const char* str : strings_to_replace) {
+    // Hash the string with salt
+    std::string to_hash = str;
+    to_hash += kSalt;
+    
+    // Compute hash
+    uint32_t hash = 0;
+    for (char c : to_hash) {
+      hash = hash * 31 + c;
+    }
+    
+    // Store the hashed value
+    std::stringstream hash_stream;
+    hash_stream << std::hex << hash;
+    (*g_string_to_hash)[str] = hash_stream.str();
+  }
+}
+
+std::string ConvertMaybeDirectHandleStringToStdString(Isolate* isolate, 
+                                                     MaybeDirectHandle<String> maybe_string) {
+  if (maybe_string.is_null()) {
+    return "";
+  }
+  
+  DirectHandle<String> string_handle = maybe_string.ToHandleChecked();
+  
+  // Get the length of the string
+  int length = string_handle->length();
+  // Allocate buffer for the UTF-8 string (worst case: 3 bytes per char)
+  std::unique_ptr<char[]> buffer(new char[length * sizeof(char) * 3 + 1]);
+  
+  // Use the correct namespace/class for Utf8EncodingFlags
+  UncachedExternalString::Utf8EncodingFlags flags = 
+      static_cast<UncachedExternalString::Utf8EncodingFlags>(0);  // Use default flags
+  
+  // Store the result in size_t to avoid the precision warning
+  size_t utf8_length = String::WriteUtf8(
+      isolate, 
+      string_handle, 
+      buffer.get(), 
+      length * sizeof(char) * 3,
+      flags,
+      nullptr);  // No need to know how many characters were processed
+  
+  return std::string(buffer.get(), utf8_length);
+}
+
 // static
 MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
     Isolate* isolate, DirectHandle<JSObject> error,
@@ -316,6 +391,8 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
 
       // If there's a user-specified "prepareStackTrace" function, call it on
       // the frames and use its result.
+      // "prepareStackTrace" is not available in the browser so we don't need to 
+      // worry about it as far as scraping detection is concerned.
 
       DirectHandle<Object> prepare_stack_trace;
       ASSIGN_RETURN_ON_EXCEPTION(
@@ -390,7 +467,39 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
     }
   }
 
-  return builder.Finish();
+  // Get the formatted stack string
+  MaybeDirectHandle<String> stack_string = builder.Finish();
+  
+  // Initialize exactly once
+  std::call_once(g_init_flag, InitializeStackTraceReplacements);
+  
+  // Convert V8 string to std::string for easier manipulation
+  std::string std_stack = ConvertMaybeDirectHandleStringToStdString(isolate, stack_string);
+  
+  // Perform all the replacements
+  bool modified = false;
+  for (const auto& entry : *g_string_to_hash) {
+    const std::string& str_to_replace = entry.first;
+    const std::string& replacement = entry.second;
+    
+    // Find and replace all occurrences
+    size_t position = 0;
+    while ((position = std_stack.find(str_to_replace, position)) != std::string::npos) {
+      std_stack.replace(position, str_to_replace.length(), replacement);
+      position += replacement.length();
+      modified = true;
+    }
+  }
+  
+  // Convert back to V8 string if modified
+  if (modified) {
+    return isolate->factory()->NewStringFromUtf8(
+        base::Vector<const char>(std_stack.c_str(), std_stack.length()))
+        .ToHandleChecked();
+  }
+  
+  // Return original if no replacements were made
+  return stack_string;
 }
 
 DirectHandle<String> MessageFormatter::Format(
